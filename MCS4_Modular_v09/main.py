@@ -33,7 +33,7 @@ except Exception:
     list_ports = None
 
 
-APP_VERSION = "1.0"
+APP_VERSION = "0.9"
 SYNC_BYTE = 0xFF
 PACKET_LENGTH = 8
 
@@ -214,11 +214,6 @@ class MainWindow(QMainWindow):
         self.decoder_log.setReadOnly(True)
         self.tabs.addTab(self.decoder_log, "Decoder")
 
-        self.explorer_table = QTableWidget(0, 3)
-        self.explorer_table.setHorizontalHeaderLabels(["Feld", "Wert", "Bedeutung"])
-        self.explorer_table.horizontalHeader().setStretchLastSection(True)
-        self.tabs.addTab(self.explorer_table, "Telegramm-Explorer")
-
         self.alarm_log = QPlainTextEdit()
         self.alarm_log.setReadOnly(True)
         self.tabs.addTab(self.alarm_log, "Alarme")
@@ -257,7 +252,6 @@ class MainWindow(QMainWindow):
         self.stop(clear_status=False)
         self.telegram_log.clear()
         self.decoder_log.clear()
-        self.explorer_table.setRowCount(0)
         self.buffer.clear()
 
         mode = self.mode.currentText()
@@ -446,62 +440,8 @@ class MainWindow(QMainWindow):
             f"STATUS={state} SRC={source} DST={destination} HEADER={header:02X}"
         )
 
-        self.update_explorer(
-            packet=packet,
-            header=header,
-            destination=destination,
-            source=source,
-            channel=channel,
-            unit_code=unit_code,
-            msb=msb,
-            lsb=lsb,
-            raw_value=raw_value,
-            value=value,
-            unit=unit,
-            name=name,
-            state=state,
-        )
-
         self.update_dashboard()
         self.update_trend(channel, value, name)
-
-    def update_explorer(
-        self,
-        packet: bytes,
-        header: int,
-        destination: int,
-        source: int,
-        channel: int,
-        unit_code: int,
-        msb: int,
-        lsb: int,
-        raw_value: int,
-        value: float,
-        unit: str,
-        name: str,
-        state: str,
-    ):
-        word_type = header & 0x0F
-        rows = [
-            ("Telegramm", hex_string(packet), "Vollständiges 8-Byte-Telegramm"),
-            ("Byte 1 / Sync", f"0x{packet[0]:02X}", "Synchronisationsbyte"),
-            ("Byte 2 / Header", f"0x{header:02X}", f"Vorläufiger Word Type = {word_type}"),
-            ("Byte 3 / Destination", str(destination), "Zieladresse"),
-            ("Byte 4 / Source", str(source), "Senderadresse"),
-            ("Byte 5 / Channel", str(channel), name),
-            ("Byte 6 / Unit", str(unit_code), unit if unit else "unbekannte Einheit"),
-            ("Byte 7 / MSB", f"0x{packet[6]:02X}", f"Wert-MSB ohne Fehlerbit = {msb}"),
-            ("Byte 8 / LSB", f"0x{lsb:02X}", "Wert-LSB"),
-            ("Raw Value", str(raw_value), "Rohwert vor Skalierung"),
-            ("Skalierter Wert", f"{value:.2f} {unit}", name),
-            ("Status", state, "Ergebnis der Grenzwertprüfung"),
-        ]
-
-        self.explorer_table.setRowCount(len(rows))
-        for row, (field, value_text, meaning) in enumerate(rows):
-            self.explorer_table.setItem(row, 0, QTableWidgetItem(field))
-            self.explorer_table.setItem(row, 1, QTableWidgetItem(value_text))
-            self.explorer_table.setItem(row, 2, QTableWidgetItem(meaning))
 
     def evaluate_sensor(self, channel: int, name: str, value: float, unit: str):
         limits = self.limits.get(channel)

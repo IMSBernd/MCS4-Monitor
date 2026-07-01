@@ -1,6 +1,0 @@
-{
-  "app_name": "MCS-4 Professional Monitor",
-  "serial": {"baudrate": 38400, "bytesize": 8, "parity": "O", "stopbits": 1, "timeout": 0.05},
-  "simulator": {"interval_ms": 100},
-  "alarms": {"sensor_timeout_s": 3.0}
-}
