@@ -1,77 +1,91 @@
 from __future__ import annotations
-
 import threading
 import time
+from datetime import datetime
 from typing import Callable
 
-import serial
-from serial.tools import list_ports
+try:
+    import serial
+except Exception:
+    serial = None
+
+from model.telegram import Telegram
 
 
 class SerialDriver:
-    def __init__(self, port: str, baudrate: int = 38400, bytesize: int = 8,
-                 parity: str = "O", stopbits: int = 1, timeout: float = 0.1) -> None:
+    """Einfacher serieller RX-Treiber. GUI-Updates erfolgen über Callbacks/Qt-Signale."""
+
+    def __init__(self, port: str, baudrate: int = 38400, parity: str = "O"):
         self.port = port
         self.baudrate = baudrate
-        self.bytesize = bytesize
         self.parity = parity
-        self.stopbits = stopbits
-        self.timeout = timeout
-        self._serial: serial.Serial | None = None
+        self._ser = None
+        self._running = False
         self._thread: threading.Thread | None = None
-        self._stop = threading.Event()
-        self.on_data: Callable[[bytes], None] | None = None
-        self.on_log: Callable[[str], None] | None = None
+        self.on_bytes: Callable[[Telegram], None] | None = None
+        self.on_status: Callable[[str], None] | None = None
+        self.on_diagnostics: Callable[[dict], None] | None = None
+        self._byte_count = 0
+        self._telegram_count = 0
+        self._start = time.monotonic()
 
-    @staticmethod
-    def available_ports() -> list[tuple[str, str]]:
-        return [(p.device, p.description) for p in list_ports.comports()]
-
-    def connect(self) -> None:
-        if not self.port:
-            raise ValueError("Kein COM-Port ausgewählt")
-        self._serial = serial.Serial(
+    def start(self) -> None:
+        if serial is None:
+            raise RuntimeError("pyserial ist nicht installiert. Bitte: pip install pyserial")
+        if self._running:
+            return
+        self._ser = serial.Serial(
             port=self.port,
             baudrate=self.baudrate,
-            bytesize=self.bytesize,
-            parity=self.parity,
-            stopbits=self.stopbits,
-            timeout=self.timeout,
+            bytesize=serial.EIGHTBITS,
+            parity=serial.PARITY_ODD if self.parity.upper() == "O" else serial.PARITY_NONE,
+            stopbits=serial.STOPBITS_ONE,
+            timeout=0.05,
         )
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._read_loop, daemon=True)
+        self._running = True
+        self._start = time.monotonic()
+        if self.on_status:
+            self.on_status(f"Verbunden: {self.port}")
+        self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
-        self._log(f"Verbunden mit {self.port} ({self.baudrate} Baud, 8{self.parity}1)")
 
-    def disconnect(self) -> None:
-        self._stop.set()
+    def stop(self) -> None:
+        self._running = False
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
-        if self._serial and self._serial.is_open:
-            self._serial.close()
-        self._log("Verbindung getrennt")
-
-    def is_connected(self) -> bool:
-        return bool(self._serial and self._serial.is_open)
-
-    def write(self, data: bytes) -> int:
-        if not self._serial or not self._serial.is_open:
-            raise RuntimeError("Serielle Verbindung ist nicht geöffnet")
-        return self._serial.write(data)
-
-    def _read_loop(self) -> None:
-        while not self._stop.is_set():
+        if self._ser:
             try:
-                if self._serial is None:
-                    time.sleep(0.1)
-                    continue
-                data = self._serial.read(256)
-                if data and self.on_data:
-                    self.on_data(data)
-            except Exception as exc:  # bewusst robust für Industriekommunikation
-                self._log(f"Lesefehler: {exc}")
-                time.sleep(0.5)
+                self._ser.close()
+            except Exception:
+                pass
+        if self.on_status:
+            self.on_status("Getrennt")
 
-    def _log(self, message: str) -> None:
-        if self.on_log:
-            self.on_log(message)
+    def _loop(self) -> None:
+        buffer = bytearray()
+        while self._running:
+            try:
+                data = self._ser.read(64) if self._ser else b""
+                if data:
+                    self._byte_count += len(data)
+                    buffer.extend(data)
+                    # Rohdaten ebenfalls anzeigen
+                    if self.on_bytes:
+                        self.on_bytes(Telegram(raw=bytes(data), timestamp=datetime.now(), source=self.port))
+                    # Diagnose grob aktualisieren
+                    elapsed = max(0.001, time.monotonic() - self._start)
+                    if self.on_diagnostics:
+                        self.on_diagnostics({
+                            "Quelle": self.port,
+                            "Telegramme/s": f"{self._telegram_count / elapsed:.1f}",
+                            "Telegramme": str(self._telegram_count),
+                            "Bytes": str(self._byte_count),
+                            "CRC-Fehler": "0",
+                            "Timeouts": "0",
+                        })
+                else:
+                    time.sleep(0.01)
+            except Exception as exc:
+                if self.on_status:
+                    self.on_status(f"Serieller Fehler: {exc}")
+                time.sleep(0.5)

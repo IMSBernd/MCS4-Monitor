@@ -1,9 +1,9 @@
 .venv/
 __pycache__/
 *.pyc
-logs/*.log
 *.sqlite
-*.db
-build/
+*.sqlite-journal
+logs/*.log
 dist/
+build/
 *.spec

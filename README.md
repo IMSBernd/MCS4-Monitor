@@ -1,17 +1,15 @@
-# MCS-4 Monitor
+# MCS-4 Professional Monitor - Version 0.5
 
-Professionelle Windows-Software zur Visualisierung von MCS-4 Sensorwerten über RS422.
+Stabile Basisversion mit:
 
-## Version 0.1
-
-Enthält:
 - PySide6 GUI
 - COM-Port-Erkennung
-- Simulator-Modus
-- 8-Byte-Telegramm-Grundparser mit Sync 0xFF
-- Sensorliste
-- Alarmfenster
+- Simulator
+- Sensordashboard
+- Trenddiagramm
+- HEX-Telegrammmonitor
 - Diagnoseanzeige
+- thread-sicherem Event-Fluss ohne SQLite-Absturz
 
 ## Start
 
@@ -21,8 +19,10 @@ pip install -r requirements.txt
 python main.py
 ```
 
-## EXE bauen
+## Git speichern
 
 ```cmd
-build_windows.bat
+git add .
+git commit -m "Version 0.5 stabile Basis"
+git push
 ```
