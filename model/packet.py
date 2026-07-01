@@ -28,14 +28,14 @@ class MCSPacket:
 
     @property
     def word_type(self) -> int:
-        # Vorläufige Extraktion. Wird nach finaler PDF-Auswertung angepasst.
         return self.header & 0x0F
 
     @property
     def raw_value(self) -> int:
-        return ((self.data_msb & 0x7F) << 8) | self.data_lsb
+        # Nur die unteren 6 Bit des MSB enthalten den Wert
+        return ((self.data_msb & 0x3F) << 8) | self.data_lsb
 
     @property
     def sensor_fault(self) -> bool:
-        # Vorläufig: Bit 6 im Daten-MSB. Wird später gegen PDF final geprüft.
+        # Bit 6 signalisiert Sensorfehler
         return bool(self.data_msb & 0x40)

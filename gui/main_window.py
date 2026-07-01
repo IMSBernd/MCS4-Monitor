@@ -23,7 +23,6 @@ from core.sensor_manager import SensorManager
 from core.serial_driver import SerialDriver
 from core.simulator import MCSSimulator
 from database.history import HistoryDatabase
-from model.packet import RawPacket
 from protocol.mcs4_decoder import MCS4Decoder
 from protocol.packet_reader import PacketReader
 from protocol.parser import PacketParser, PacketParseError
@@ -33,7 +32,7 @@ class MainWindow(QMainWindow):
     def __init__(self, config: AppConfig) -> None:
         super().__init__()
         self.config = config
-        self.setWindowTitle(f"{config.app_name} - Version 0.1")
+        self.setWindowTitle(f"{config.app_name} - Version 0.5.1")
         self.resize(1200, 760)
 
         self.reader = PacketReader(config.packet.sync_byte, config.packet.length)
@@ -42,29 +41,39 @@ class MainWindow(QMainWindow):
         self.sensors = SensorManager()
         self.alarms = AlarmManager()
         self.history = HistoryDatabase(config.database.path)
+
         self.simulator: MCSSimulator | None = None
         self.serial_driver: SerialDriver | None = None
+
         self.packet_counter = 0
         self.error_counter = 0
 
         self._build_ui()
         self._refresh_ports()
-        self._timer = QTimer(self)
-        self._timer.timeout.connect(self._update_diagnostics)
-        self._timer.start(1000)
+
+        self._diagnostic_timer = QTimer(self)
+        self._diagnostic_timer.timeout.connect(self._update_diagnostics)
+        self._diagnostic_timer.start(1000)
+
+        self.sim_timer = QTimer(self)
+        self.sim_timer.timeout.connect(self._simulator_tick)
 
     def _build_ui(self) -> None:
         root = QWidget()
         layout = QVBoxLayout(root)
 
         top = QHBoxLayout()
+
         self.mode_box = QComboBox()
         self.mode_box.addItems(["Simulator", "RS422"])
+
         self.port_box = QComboBox()
+
         self.refresh_button = QPushButton("Ports aktualisieren")
         self.start_button = QPushButton("Start")
         self.stop_button = QPushButton("Stop")
         self.status_label = QLabel("Status: bereit")
+
         top.addWidget(QLabel("Modus:"))
         top.addWidget(self.mode_box)
         top.addWidget(QLabel("COM-Port:"))
@@ -74,11 +83,15 @@ class MainWindow(QMainWindow):
         top.addWidget(self.stop_button)
         top.addStretch(1)
         top.addWidget(self.status_label)
+
         layout.addLayout(top)
 
         tabs = QTabWidget()
+
         self.sensor_table = QTableWidget(0, 6)
-        self.sensor_table.setHorizontalHeaderLabels(["ID", "Sensor", "Wert", "Einheit", "Status", "Zeit"])
+        self.sensor_table.setHorizontalHeaderLabels(
+            ["ID", "Sensor", "Wert", "Einheit", "Status", "Zeit"]
+        )
         self.sensor_table.horizontalHeader().setStretchLastSection(True)
         tabs.addTab(self.sensor_table, "Dashboard")
 
@@ -104,70 +117,107 @@ class MainWindow(QMainWindow):
     def _refresh_ports(self) -> None:
         self.port_box.clear()
         ports = SerialDriver.available_ports()
+
         if not ports:
             self.port_box.addItem("Kein COM-Port gefunden", "")
             return
+
         for port, description in ports:
             self.port_box.addItem(f"{port} - {description}", port)
 
     def start_acquisition(self) -> None:
         self.stop_acquisition()
+
         mode = self.mode_box.currentText()
+
         if mode == "Simulator":
             self.simulator = MCSSimulator()
-            self.simulator.on_data = self._on_bytes_received
-            self.simulator.on_log = self._log
-            self.simulator.start()
+            self.sim_timer.start(250)
+            self._log("Simulator gestartet")
             self.status_label.setText("Status: Simulator läuft")
-        else:
-            port = self.port_box.currentData()
-            try:
-                self.serial_driver = SerialDriver(
-                    port=port,
-                    baudrate=self.config.serial.baudrate,
-                    bytesize=self.config.serial.bytesize,
-                    parity=self.config.serial.parity,
-                    stopbits=self.config.serial.stopbits,
-                    timeout=self.config.serial.timeout,
-                )
-                self.serial_driver.on_data = self._on_bytes_received
-                self.serial_driver.on_log = self._log
-                self.serial_driver.connect()
-                self.status_label.setText(f"Status: verbunden mit {port}")
-            except Exception as exc:
-                self.status_label.setText("Status: Fehler")
-                self._log(f"Verbindungsfehler: {exc}")
+            return
+
+        port = self.port_box.currentData()
+
+        if not port:
+            self.status_label.setText("Status: Kein COM-Port ausgewählt")
+            self._log("Kein COM-Port ausgewählt")
+            return
+
+        try:
+            self.serial_driver = SerialDriver(
+                port=port,
+                baudrate=self.config.serial.baudrate,
+                bytesize=self.config.serial.bytesize,
+                parity=self.config.serial.parity,
+                stopbits=self.config.serial.stopbits,
+                timeout=self.config.serial.timeout,
+            )
+            self.serial_driver.on_data = self._on_bytes_received
+            self.serial_driver.on_log = self._log
+            self.serial_driver.connect()
+            self.status_label.setText(f"Status: verbunden mit {port}")
+
+        except Exception as exc:
+            self.status_label.setText("Status: Fehler")
+            self._log(f"Verbindungsfehler: {exc}")
 
     def stop_acquisition(self) -> None:
         if self.simulator:
-            self.simulator.stop()
+            self.sim_timer.stop()
             self.simulator = None
+            self._log("Simulator gestoppt")
+
         if self.serial_driver:
             self.serial_driver.disconnect()
             self.serial_driver = None
+            self._log("RS422 getrennt")
+
         self.status_label.setText("Status: gestoppt")
+
+    def _simulator_tick(self) -> None:
+        if not self.simulator:
+            return
+
+        data = self.simulator.next_data()
+        self._on_bytes_received(data)
 
     def _on_bytes_received(self, data: bytes) -> None:
         packets = self.reader.feed(data)
+
         for raw in packets:
-            self.telegram_log.appendPlainText(f"RX {raw.hex()}")
+            self.telegram_log.appendPlainText(f"RX {raw.hex(' ').upper()}")
+
             try:
                 packet = self.parser.parse(raw)
                 decoded = self.decoder.decode(packet)
                 sensor = self.sensors.update_from_decoded(decoded)
+
+                # Datenbank wird später thread-sicher wieder aktiviert.
                 # self.history.insert_sensor(sensor)
+
                 self.packet_counter += 1
+
                 for alarm in self.alarms.evaluate(sensor):
                     state = "AKTIV" if alarm.active else "INAKTIV"
-                    self.alarm_log.appendPlainText(f"{alarm.timestamp:%H:%M:%S} [{state}] {alarm.text}")
+                    self.alarm_log.appendPlainText(
+                        f"{alarm.timestamp:%H:%M:%S} [{state}] {alarm.text}"
+                    )
+
                 self._update_sensor_table()
+
             except PacketParseError as exc:
                 self.error_counter += 1
                 self._log(f"Parserfehler: {exc}")
 
+            except Exception as exc:
+                self.error_counter += 1
+                self._log(f"Fehler bei Telegrammverarbeitung: {exc}")
+
     def _update_sensor_table(self) -> None:
         sensors = self.sensors.all_sensors()
         self.sensor_table.setRowCount(len(sensors))
+
         for row, sensor in enumerate(sensors):
             values = [
                 str(sensor.sensor_id),
@@ -177,14 +227,18 @@ class MainWindow(QMainWindow):
                 sensor.status_text,
                 sensor.last_update.strftime("%H:%M:%S") if sensor.last_update else "-",
             ]
+
             for col, value in enumerate(values):
                 item = QTableWidgetItem(value)
+
                 if col in (0, 2):
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+
                 self.sensor_table.setItem(row, col, item)
 
     def _update_diagnostics(self) -> None:
         active_alarms = self.alarms.active_alarms()
+
         text = (
             f"Zeit: {datetime.now():%Y-%m-%d %H:%M:%S}\n"
             f"Empfangene Telegramme: {self.packet_counter}\n"
@@ -192,7 +246,14 @@ class MainWindow(QMainWindow):
             f"Sensoren: {len(self.sensors.all_sensors())}\n"
             f"Aktive Alarme: {len(active_alarms)}\n"
         )
+
         self.diagnostics.setPlainText(text)
 
     def _log(self, message: str) -> None:
-        self.telegram_log.appendPlainText(f"LOG {datetime.now():%H:%M:%S} {message}")
+        self.telegram_log.appendPlainText(
+            f"LOG {datetime.now():%H:%M:%S} {message}"
+        )
+
+    def closeEvent(self, event) -> None:
+        self.stop_acquisition()
+        event.accept()
