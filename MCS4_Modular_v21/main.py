@@ -39,7 +39,7 @@ except Exception:
     list_ports = None
 
 
-APP_VERSION = "2.1"
+APP_VERSION = "2.0"
 SYNC_BYTE = 0xFF
 PACKET_LENGTH = 8
 
@@ -296,14 +296,6 @@ class MainWindow(QMainWindow):
         # Anlagen-Messpunkte später gezielt benannt und konfiguriert werden.
         self.analyzer_seen = {}
 
-        # Live Protocol Analyzer / Version 2.1
-        self.protocol_wordtype_counts = defaultdict(int)
-        self.protocol_mp_counts = defaultdict(int)
-        self.protocol_key_counts = defaultdict(int)
-        self.protocol_invalid_count = 0
-        self.protocol_total_count = 0
-        self.protocol_packet_times = deque(maxlen=1000)
-
         self.trend_data = defaultdict(lambda: deque(maxlen=250))
         self.curves = {}
 
@@ -452,10 +444,6 @@ class MainWindow(QMainWindow):
         self.analyzer_table.horizontalHeader().setStretchLastSection(True)
         analyzer_layout.addWidget(self.analyzer_table)
         self.tabs.addTab(analyzer_widget, "MCS-4 Analyzer")
-
-        self.protocol_stats_log = QPlainTextEdit()
-        self.protocol_stats_log.setReadOnly(True)
-        self.tabs.addTab(self.protocol_stats_log, "Protocol-Statistik")
 
         config_widget = QWidget()
         config_layout = QVBoxLayout(config_widget)
@@ -889,7 +877,6 @@ class MainWindow(QMainWindow):
         now = datetime.now().strftime("%H:%M:%S")
 
         validation_errors = self.validate_packet(packet, word_type)
-        self.register_protocol_packet(packet, word_type, number, None, None, None, validation_errors)
 
         if word_type != 0:
             self.packet_count += 1
@@ -912,7 +899,6 @@ class MainWindow(QMainWindow):
         page, line = decode_page_line(byte6)
         raw_value, negative, sensor_fault = decode_12bit_value(packet[6], packet[7])
         value, unit, scaling_text = scale_raw_value(raw_value, page, line, negative)
-        self.register_protocol_data_key(measuring_point, page, line, unit, raw_value, value)
 
         # Neu erkannte Messpunkte werden automatisch im Konfigurator angelegt.
         # Der Name kann anschließend manuell geändert und gespeichert werden.
@@ -1697,73 +1683,7 @@ class MainWindow(QMainWindow):
         self.telegram_log.appendPlainText(f"PLAY {hex_string(packet)}")
         self.process_bytes(packet)
 
-
-    def register_protocol_packet(self, packet: bytes, word_type: int, number: int, page, line, key, validation_errors: list[str]):
-        """Collect live protocol statistics for reverse engineering.
-
-        This does not affect the dashboard. It only counts what the bus sends so
-        that unknown measuring points and unusual word types can be analyzed.
-        """
-        self.protocol_total_count += 1
-        self.protocol_wordtype_counts[word_type] += 1
-        self.protocol_mp_counts[number] += 1
-        self.protocol_packet_times.append(datetime.now())
-        if validation_errors:
-            self.protocol_invalid_count += 1
-
-    def register_protocol_data_key(self, measuring_point: int, page: int, line: int, unit: str, raw_value: int, value: float):
-        key = sensor_key(measuring_point, page, line)
-        self.protocol_key_counts[key] += 1
-
-    def _telegram_rate_per_second(self) -> float:
-        if len(self.protocol_packet_times) < 2:
-            return 0.0
-        now = datetime.now()
-        recent = [t for t in self.protocol_packet_times if (now - t).total_seconds() <= 5]
-        if len(recent) < 2:
-            return 0.0
-        span = max((recent[-1] - recent[0]).total_seconds(), 0.001)
-        return len(recent) / span
-
-    def update_protocol_statistics_tab(self):
-        lines = []
-        lines.append("MCS-4 Live Protocol Analyzer")
-        lines.append("============================")
-        lines.append(f"Zeit: {datetime.now():%Y-%m-%d %H:%M:%S}")
-        lines.append(f"Gesamttelegramme: {self.protocol_total_count}")
-        lines.append(f"Telegramme/s (letzte ca. 5 s): {self._telegram_rate_per_second():.1f}")
-        lines.append(f"Ungültige Telegramme: {self.protocol_invalid_count}")
-        lines.append("")
-        lines.append("WordType-Verteilung:")
-        if not self.protocol_wordtype_counts:
-            lines.append("  Noch keine Telegramme erfasst")
-        else:
-            for wt, count in sorted(self.protocol_wordtype_counts.items()):
-                label = self.word_types.get(wt, "unbekannt")
-                lines.append(f"  WT {wt}: {count:8d}  {label}")
-        lines.append("")
-        lines.append("Häufigste Messpunkte / Nummern:")
-        if not self.protocol_mp_counts:
-            lines.append("  Noch keine Messpunkte erfasst")
-        else:
-            for mp, count in sorted(self.protocol_mp_counts.items(), key=lambda x: (-x[1], x[0]))[:30]:
-                lines.append(f"  MP/NO {mp:3d}: {count:8d}")
-        lines.append("")
-        lines.append("Häufigste Data-Value Keys (MP:Page:Line):")
-        if not self.protocol_key_counts:
-            lines.append("  Noch keine Data-Value-Keys erfasst")
-        else:
-            for key, count in sorted(self.protocol_key_counts.items(), key=lambda x: (-x[1], sort_sensor_id(x[0])))[:30]:
-                name = self.sensor_names.get(key, "unbekannt")
-                lines.append(f"  {key:10s}: {count:8d}  {name}")
-        lines.append("")
-        lines.append("Hinweis:")
-        lines.append("  Diese Statistik hilft, echte zyklische Messwerte, seltene Meldungen")
-        lines.append("  und unbekannte Telegramme auf einer realen MCS-4-Anlage zu erkennen.")
-        self.protocol_stats_log.setPlainText("\n".join(lines))
-
     def update_diagnostics(self):
-        self.update_protocol_statistics_tab()
         text = (
             f"Zeit: {datetime.now():%Y-%m-%d %H:%M:%S}\n"
             f"Modus: {self.mode.currentText()}\n"

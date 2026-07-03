@@ -1,0 +1,6 @@
+﻿id;name;value;unit;state;alarm;min;max;time
+1;ddd;82.7;°C;OK;;79.0;84.9;00:21:36
+2;Öldruck;5.0;bar;OK;;5.0;5.39;00:21:36
+3;Drehzahl;1529.0;rpm;OK;;1420.0;1539.0;00:21:36
+4;Kühlwasser;76.5;°C;OK;;76.5;81.4;00:21:36
+5;Abgastemperatur;461.0;°C;OK;;452.0;468.0;00:21:36

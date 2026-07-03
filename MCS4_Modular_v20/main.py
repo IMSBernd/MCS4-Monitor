@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
-    QMessageBox,
     QPushButton,
     QPlainTextEdit,
     QTableWidget,
@@ -39,7 +38,7 @@ except Exception:
     list_ports = None
 
 
-APP_VERSION = "2.1"
+APP_VERSION = "1.9"
 SYNC_BYTE = 0xFF
 PACKET_LENGTH = 8
 
@@ -296,14 +295,6 @@ class MainWindow(QMainWindow):
         # Anlagen-Messpunkte später gezielt benannt und konfiguriert werden.
         self.analyzer_seen = {}
 
-        # Live Protocol Analyzer / Version 2.1
-        self.protocol_wordtype_counts = defaultdict(int)
-        self.protocol_mp_counts = defaultdict(int)
-        self.protocol_key_counts = defaultdict(int)
-        self.protocol_invalid_count = 0
-        self.protocol_total_count = 0
-        self.protocol_packet_times = deque(maxlen=1000)
-
         self.trend_data = defaultdict(lambda: deque(maxlen=250))
         self.curves = {}
 
@@ -453,23 +444,17 @@ class MainWindow(QMainWindow):
         analyzer_layout.addWidget(self.analyzer_table)
         self.tabs.addTab(analyzer_widget, "MCS-4 Analyzer")
 
-        self.protocol_stats_log = QPlainTextEdit()
-        self.protocol_stats_log.setReadOnly(True)
-        self.tabs.addTab(self.protocol_stats_log, "Protocol-Statistik")
-
         config_widget = QWidget()
         config_layout = QVBoxLayout(config_widget)
         config_buttons = QHBoxLayout()
         self.config_save_btn = QPushButton("Sensor-Konfiguration speichern")
         self.config_reload_btn = QPushButton("Konfiguration neu laden")
-        self.config_cleanup_btn = QPushButton("Ungenutzte Sensoren bereinigen")
         config_buttons.addWidget(self.config_save_btn)
         config_buttons.addWidget(self.config_reload_btn)
-        config_buttons.addWidget(self.config_cleanup_btn)
         config_buttons.addStretch()
         config_layout.addLayout(config_buttons)
-        self.config_table = QTableWidget(0, 12)
-        self.config_table.setHorizontalHeaderLabels(["Key", "Messpunkt", "Name", "Page", "Line", "Einheit", "Warn Low", "Warn High", "Alarm Low", "Alarm High", "Aktiv", "Status"])
+        self.config_table = QTableWidget(0, 10)
+        self.config_table.setHorizontalHeaderLabels(["Key", "Messpunkt", "Name", "Page", "Line", "Einheit", "Warn Low", "Warn High", "Alarm Low", "Alarm High"])
         self.config_table.horizontalHeader().setStretchLastSection(True)
         config_layout.addWidget(self.config_table)
         self.tabs.addTab(config_widget, "Sensor-Konfiguration")
@@ -501,7 +486,6 @@ class MainWindow(QMainWindow):
         self.export_trend_btn.clicked.connect(self.export_trend_png)
         self.config_save_btn.clicked.connect(self.save_sensor_config_from_table)
         self.config_reload_btn.clicked.connect(self.reload_sensor_config)
-        self.config_cleanup_btn.clicked.connect(self.cleanup_unused_sensor_config)
         self.learn_save_btn.clicked.connect(self.save_learned_sensor_name)
         self.populate_config_table()
 
@@ -561,23 +545,9 @@ class MainWindow(QMainWindow):
         sensors.sort(key=lambda e: (int(e.get("id", 0)), int(e.get("page", 0) or 0), int(e.get("line", 0) or 0)))
         self.config_table.setRowCount(len(sensors))
         columns = ["key", "id", "name", "page", "line", "unit", "warn_low", "warn_high", "alarm_low", "alarm_high"]
-        active_keys = set(self.analyzer_seen.keys()) | set(self.sensor_values.keys())
         for row, entry in enumerate(sensors):
-            entry_key = str(entry.get("key", ""))
             for col, key in enumerate(columns):
                 self.config_table.setItem(row, col, QTableWidgetItem(str(entry.get(key, ""))))
-
-            active = entry_key in active_keys
-            active_item = QTableWidgetItem("Ja" if active else "Nein")
-            status_item = QTableWidgetItem("in aktueller Sitzung erkannt" if active else "nicht in aktueller Sitzung erkannt")
-            if active:
-                active_item.setBackground(Qt.green)
-                status_item.setBackground(Qt.green)
-            else:
-                active_item.setBackground(Qt.lightGray)
-                status_item.setBackground(Qt.lightGray)
-            self.config_table.setItem(row, 10, active_item)
-            self.config_table.setItem(row, 11, status_item)
 
     def save_sensor_config_from_table(self):
         sensors = []
@@ -623,55 +593,6 @@ class MainWindow(QMainWindow):
         self.active_alarms.clear()
         self.table.setRowCount(0)
         self.log("Sensor-Konfiguration neu geladen")
-
-    def cleanup_unused_sensor_config(self):
-        """Remove configuration entries that were not seen in the current session.
-
-        This is useful after changing Page/Line decoding. Old entries such as
-        5:3:0 remain in sensor_config.json until the user deliberately removes
-        them. The cleanup keeps only keys that are currently present in the
-        analyzer or dashboard.
-        """
-        active_keys = set(self.analyzer_seen.keys()) | set(self.sensor_values.keys())
-        if not active_keys:
-            self.log("Bereinigung nicht möglich: In dieser Sitzung wurden noch keine Sensoren erkannt")
-            return
-
-        sensors = list(self.config_data.get("sensors", []))
-        keep = []
-        removed = []
-        for entry in sensors:
-            key = str(entry.get("key") or sensor_key(int(entry.get("id", 0)), int(entry.get("page", 0) or 0), int(entry.get("line", 0) or 0)))
-            if key in active_keys:
-                keep.append(entry)
-            else:
-                removed.append(key)
-
-        if not removed:
-            self.log("Bereinigung: keine ungenutzten Sensoren gefunden")
-            self.populate_config_table()
-            return
-
-        answer = QMessageBox.question(
-            self,
-            "Sensor-Konfiguration bereinigen",
-            "Es werden Konfigurationseinträge entfernt, die in der aktuellen Sitzung nicht erkannt wurden.\n\n"
-            + "Entfernen: " + ", ".join(removed[:12])
-            + (" ..." if len(removed) > 12 else "")
-            + "\n\nFortfahren?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if answer != QMessageBox.Yes:
-            self.log("Bereinigung abgebrochen")
-            return
-
-        self.config_data = {"sensors": keep}
-        CONFIG_FILE.write_text(json.dumps(self.config_data, indent=2, ensure_ascii=False), encoding="utf-8")
-        self.load_sensor_config_from_file()
-        self.populate_config_table()
-        self.log(f"Bereinigung abgeschlossen: {len(removed)} Sensor(en) entfernt")
-        self.alarm_log.appendPlainText(f"{datetime.now():%H:%M:%S} [INFO] Konfiguration bereinigt: {len(removed)} entfernt")
 
     def add_detected_sensor_to_config(self, measuring_point: int, page: int, line: int, unit: str) -> None:
         """Automatically add newly detected measuring points to the configuration table.
@@ -889,7 +810,6 @@ class MainWindow(QMainWindow):
         now = datetime.now().strftime("%H:%M:%S")
 
         validation_errors = self.validate_packet(packet, word_type)
-        self.register_protocol_packet(packet, word_type, number, None, None, None, validation_errors)
 
         if word_type != 0:
             self.packet_count += 1
@@ -912,7 +832,6 @@ class MainWindow(QMainWindow):
         page, line = decode_page_line(byte6)
         raw_value, negative, sensor_fault = decode_12bit_value(packet[6], packet[7])
         value, unit, scaling_text = scale_raw_value(raw_value, page, line, negative)
-        self.register_protocol_data_key(measuring_point, page, line, unit, raw_value, value)
 
         # Neu erkannte Messpunkte werden automatisch im Konfigurator angelegt.
         # Der Name kann anschließend manuell geändert und gespeichert werden.
@@ -1118,9 +1037,6 @@ class MainWindow(QMainWindow):
             old["status"] = status
 
         self.update_analyzer_table()
-        # Aktiv-Status in Sensor-Konfiguration aktualisieren
-        if hasattr(self, "config_table"):
-            self.populate_config_table()
 
     def update_analyzer_table(self) -> None:
         rows = list(self.analyzer_seen.values())
@@ -1697,73 +1613,7 @@ class MainWindow(QMainWindow):
         self.telegram_log.appendPlainText(f"PLAY {hex_string(packet)}")
         self.process_bytes(packet)
 
-
-    def register_protocol_packet(self, packet: bytes, word_type: int, number: int, page, line, key, validation_errors: list[str]):
-        """Collect live protocol statistics for reverse engineering.
-
-        This does not affect the dashboard. It only counts what the bus sends so
-        that unknown measuring points and unusual word types can be analyzed.
-        """
-        self.protocol_total_count += 1
-        self.protocol_wordtype_counts[word_type] += 1
-        self.protocol_mp_counts[number] += 1
-        self.protocol_packet_times.append(datetime.now())
-        if validation_errors:
-            self.protocol_invalid_count += 1
-
-    def register_protocol_data_key(self, measuring_point: int, page: int, line: int, unit: str, raw_value: int, value: float):
-        key = sensor_key(measuring_point, page, line)
-        self.protocol_key_counts[key] += 1
-
-    def _telegram_rate_per_second(self) -> float:
-        if len(self.protocol_packet_times) < 2:
-            return 0.0
-        now = datetime.now()
-        recent = [t for t in self.protocol_packet_times if (now - t).total_seconds() <= 5]
-        if len(recent) < 2:
-            return 0.0
-        span = max((recent[-1] - recent[0]).total_seconds(), 0.001)
-        return len(recent) / span
-
-    def update_protocol_statistics_tab(self):
-        lines = []
-        lines.append("MCS-4 Live Protocol Analyzer")
-        lines.append("============================")
-        lines.append(f"Zeit: {datetime.now():%Y-%m-%d %H:%M:%S}")
-        lines.append(f"Gesamttelegramme: {self.protocol_total_count}")
-        lines.append(f"Telegramme/s (letzte ca. 5 s): {self._telegram_rate_per_second():.1f}")
-        lines.append(f"Ungültige Telegramme: {self.protocol_invalid_count}")
-        lines.append("")
-        lines.append("WordType-Verteilung:")
-        if not self.protocol_wordtype_counts:
-            lines.append("  Noch keine Telegramme erfasst")
-        else:
-            for wt, count in sorted(self.protocol_wordtype_counts.items()):
-                label = self.word_types.get(wt, "unbekannt")
-                lines.append(f"  WT {wt}: {count:8d}  {label}")
-        lines.append("")
-        lines.append("Häufigste Messpunkte / Nummern:")
-        if not self.protocol_mp_counts:
-            lines.append("  Noch keine Messpunkte erfasst")
-        else:
-            for mp, count in sorted(self.protocol_mp_counts.items(), key=lambda x: (-x[1], x[0]))[:30]:
-                lines.append(f"  MP/NO {mp:3d}: {count:8d}")
-        lines.append("")
-        lines.append("Häufigste Data-Value Keys (MP:Page:Line):")
-        if not self.protocol_key_counts:
-            lines.append("  Noch keine Data-Value-Keys erfasst")
-        else:
-            for key, count in sorted(self.protocol_key_counts.items(), key=lambda x: (-x[1], sort_sensor_id(x[0])))[:30]:
-                name = self.sensor_names.get(key, "unbekannt")
-                lines.append(f"  {key:10s}: {count:8d}  {name}")
-        lines.append("")
-        lines.append("Hinweis:")
-        lines.append("  Diese Statistik hilft, echte zyklische Messwerte, seltene Meldungen")
-        lines.append("  und unbekannte Telegramme auf einer realen MCS-4-Anlage zu erkennen.")
-        self.protocol_stats_log.setPlainText("\n".join(lines))
-
     def update_diagnostics(self):
-        self.update_protocol_statistics_tab()
         text = (
             f"Zeit: {datetime.now():%Y-%m-%d %H:%M:%S}\n"
             f"Modus: {self.mode.currentText()}\n"

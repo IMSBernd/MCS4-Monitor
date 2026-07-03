@@ -1,0 +1,5 @@
+﻿id;name;value;unit;state;alarm;min;max;time
+0;Sensor 0;0.0;;OK;;0.0;14336.0;12:47:54
+120;Sensor 120;14456.0;;SENSORFEHLER;Sensor 120: Sensorfehlerbit gesetzt;14456.0;14456.0;12:47:47
+128;Sensor 128;7680.0;;OK;;3840.0;14464.0;12:47:54
+248;Sensor 248;7680.0;;OK;;248.0;14366.0;12:47:54

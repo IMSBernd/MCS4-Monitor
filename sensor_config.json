@@ -1,0 +1,64 @@
+{
+  "sensors": [
+    {
+      "key": "1:3:0",
+      "id": 1,
+      "name": "Messpunkt 1 P3L0",
+      "page": 3,
+      "line": 0,
+      "unit": "°C",
+      "warn_low": 0.0,
+      "warn_high": 0.0,
+      "alarm_low": 0.0,
+      "alarm_high": 0.0
+    },
+    {
+      "key": "2:1:1",
+      "id": 2,
+      "name": "Messpunkt 2 P1L1",
+      "page": 1,
+      "line": 1,
+      "unit": "bar",
+      "warn_low": 0.0,
+      "warn_high": 0.0,
+      "alarm_low": 0.0,
+      "alarm_high": 0.0
+    },
+    {
+      "key": "3:8:0",
+      "id": 3,
+      "name": "Messpunkt 3 P8L0",
+      "page": 8,
+      "line": 0,
+      "unit": "rpm",
+      "warn_low": 0.0,
+      "warn_high": 0.0,
+      "alarm_low": 0.0,
+      "alarm_high": 0.0
+    },
+    {
+      "key": "4:3:0",
+      "id": 4,
+      "name": "Messpunkt 4 P3L0",
+      "page": 3,
+      "line": 0,
+      "unit": "°C",
+      "warn_low": 0.0,
+      "warn_high": 0.0,
+      "alarm_low": 0.0,
+      "alarm_high": 0.0
+    },
+    {
+      "key": "5:4:0",
+      "id": 5,
+      "name": "Messpunkt 5 P4L0",
+      "page": 4,
+      "line": 0,
+      "unit": "°C",
+      "warn_low": 0.0,
+      "warn_high": 0.0,
+      "alarm_low": 0.0,
+      "alarm_high": 0.0
+    }
+  ]
+}
