@@ -39,10 +39,9 @@ except Exception:
     list_ports = None
 
 from license_system import LicenseManager, LicenseStatus, machine_id
-from protocol.dispatcher import decode_frame as protocol_decode_frame
 
 
-APP_VERSION = "3.1.0"
+APP_VERSION = "2.4"
 SYNC_BYTE = 0xFF
 PACKET_LENGTH = 8
 
@@ -59,123 +58,15 @@ def decode_word_flags(header: int) -> int:
     return (header >> 4) & 0x0F
 
 
-def word_type_name(word_type: int) -> str:
-    return {
-        0: "Data Value / Messwert",
-        1: "Limit Value / Grenzwert",
-        2: "Alarm Message / Alarmmeldung",
-        3: "Control Command / Steuerbefehl",
-        4: "Binary Signal",
-        5: "Key Identification / Kennung",
-        6: "Status Message",
-        7: "Curve Transfer / Kurve",
-    }.get(word_type, "reserved / reserviert")
-
-
-def decode_flag_details(word_type: int, flags: int) -> list[str]:
-    """Human-readable interpretation of Byte 2 D7..D4.
-
-    The exact meaning of these four extension bits depends on the word type.
-    This function intentionally keeps every bit visible even where the final
-    semantic interpretation is still being validated against the PDF and real
-    plant recordings.
-    """
-    bit4 = bool(flags & 0x1)
-    bit5 = bool(flags & 0x2)
-    bit6 = bool(flags & 0x4)
-    bit7 = bool(flags & 0x8)
-    base = [f"D7={int(bit7)}", f"D6={int(bit6)}", f"D5={int(bit5)}", f"D4={int(bit4)}"]
-    if word_type == 0:
-        return base + (["Data Value: extension bits should normally be 0"] if flags else ["Data Value: no header flags set"])
-    if word_type == 1:
-        return base + ["Limit Value: extension bits select header/value and static/dynamic interpretation"]
-    if word_type == 2:
-        return base + ["Alarm Message: extension bits encode alarm state/class; exact semantic mapping under PDF validation"]
-    if word_type == 3:
-        return base + ["Control Command: extension bits are command-specific"]
-    if word_type == 4:
-        return base + ["Binary Signal: extension bits encode binary state/class"]
-    if word_type == 5:
-        return base + ["Key Identification: extension bits are key-specific"]
-    if word_type == 6:
-        return base + ["Status Message: extension bits are status-specific"]
-    if word_type == 7:
-        return base + ["Curve Transfer: extension bits select header/offset/curve data meaning"]
-    return base + ["Reserved/undefined WordType"]
-
-
-def decode_non_data_summary(packet: bytes) -> dict:
-    """Return a conservative PDF-oriented summary for WordTypes 1..7.
-
-    This does not convert non-data telegrams into sensor values. It records all
-    bytes and separates fields by documented telegram length so that live data
-    can be validated without creating false dashboard values.
-    """
-    header = packet[1] if len(packet) > 1 else 0
-    word_type = decode_word_type(header)
-    flags = decode_word_flags(header)
-    number = packet[4] if len(packet) > 4 else None
-    summary = {
-        "word_type": word_type,
-        "word_type_name": word_type_name(word_type),
-        "flags": flags,
-        "flag_details": decode_flag_details(word_type, flags),
-        "number": number,
-        "length": len(packet),
-        "expected_length": WORD_LENGTHS.get(word_type),
-        "raw": hex_string(packet),
-    }
-    if len(packet) == 5:
-        summary["payload"] = f"Byte5 number/code={number}"
-    elif len(packet) == 8:
-        summary["byte6"] = packet[5]
-        summary["byte7"] = packet[6]
-        summary["byte8"] = packet[7]
-        if word_type in (1, 6, 7):
-            page, line = decode_page_line(packet[5])
-            summary["page"] = page
-            summary["line"] = line
-            raw, negative, sensor_fault = decode_12bit_value(packet[6], packet[7])
-            summary["raw_value_like"] = raw
-            summary["negative_like"] = negative
-            summary["sensor_fault_like"] = sensor_fault
-    return summary
-
-
 REC_DIR = Path("recordings")
 REC_DIR.mkdir(exist_ok=True)
 EXPORT_DIR = Path("exports")
 EXPORT_DIR.mkdir(exist_ok=True)
 CONFIG_FILE = Path("sensor_config.json")
-LANG_DIR = Path("lang")
-LANG_DIR.mkdir(exist_ok=True)
-DATA_DIR = Path("database")
-DATA_DIR.mkdir(exist_ok=True)
-APPENDIX12_FILE = DATA_DIR / "appendix12.json"
-
-
-def load_language_file(language_code: str) -> dict:
-    path = LANG_DIR / f"{language_code}.json"
-    if not path.exists():
-        path = LANG_DIR / "en.json"
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
 
 
 def hex_string(data: bytes) -> str:
     return " ".join(f"{b:02X}" for b in data)
-
-
-def byte_bits(value: int) -> str:
-    """Return one byte as D7..D0 bit string for the Telegram Explorer."""
-    try:
-        value = int(value) & 0xFF
-    except Exception:
-        value = 0
-    return f"{value:08b}"
 
 
 def encode_data_packet(measuring_point: int, page: int, line: int, raw_value: int, *, source: int = 2, destination: int = 1, sensor_fault: bool = False, negative: bool = False) -> bytes:
@@ -297,32 +188,6 @@ SCALING_TABLE = {
 }
 
 
-def load_appendix12_table() -> dict:
-    """Load Appendix 12 scaling data from database/appendix12.json.
-
-    The hard-coded table remains as fallback, but Version 2.9 starts the
-    migration to a data-backed Appendix 12 implementation.
-    """
-    if not APPENDIX12_FILE.exists():
-        try:
-            serializable = {f"{p}:{l}": v for (p, l), v in SCALING_TABLE.items()}
-            APPENDIX12_FILE.write_text(json.dumps(serializable, indent=2, ensure_ascii=False), encoding="utf-8")
-        except Exception:
-            return SCALING_TABLE
-    try:
-        raw = json.loads(APPENDIX12_FILE.read_text(encoding="utf-8"))
-        loaded = {}
-        for key, value in raw.items():
-            page, line = key.split(":", 1)
-            loaded[(int(page), int(line))] = value
-        return loaded
-    except Exception:
-        return SCALING_TABLE
-
-
-SCALING_TABLE = load_appendix12_table()
-
-
 def decode_page_line(byte6: int) -> tuple[int, int]:
     return (byte6 >> 3) & 0x1F, byte6 & 0x07
 
@@ -392,9 +257,7 @@ class MainWindow(QMainWindow):
     def __init__(self, license_status: LicenseStatus | None = None):
         super().__init__()
         self.license_status = license_status
-        self.language = "en"
-        self.translations = load_language_file(self.language)
-        self.setWindowTitle(self.tr("window_title", version=APP_VERSION))
+        self.setWindowTitle(f"MCS-4 Monitor - Version {APP_VERSION} - Protocol Analyzer")
         self.resize(1360, 860)
 
         self.t = 0.0
@@ -464,10 +327,7 @@ class MainWindow(QMainWindow):
         self.curves = {}
 
         self._build_ui()
-        self.populate_compliance_table()
-        self.populate_appendix12_table()
         self.refresh_ports()
-        self.set_explorer_placeholder("No telegram received yet")
 
         self.sim_timer = QTimer(self)
         self.sim_timer.timeout.connect(self.update_simulator)
@@ -486,99 +346,23 @@ class MainWindow(QMainWindow):
         self.rec_timer.timeout.connect(self.update_recording_status)
         self.rec_timer.start(500)
 
-    def tr(self, key: str, **kwargs) -> str:
-        value = self.translations.get(key, key)
-        if isinstance(value, list):
-            return value
-        try:
-            return str(value).format(**kwargs)
-        except Exception:
-            return str(value)
-
-    def change_language(self) -> None:
-        code = self.language_box.currentData() if hasattr(self, "language_box") else "en"
-        self.language = code or "en"
-        self.translations = load_language_file(self.language)
-        self.apply_language()
-
-    def apply_language(self) -> None:
-        self.setWindowTitle(self.tr("window_title", version=APP_VERSION))
-        if self.language == "ar":
-            self.setLayoutDirection(Qt.RightToLeft)
-        else:
-            self.setLayoutDirection(Qt.LeftToRight)
-        self.title_label.setText(self.tr("app_title"))
-        self.version_label.setText(f"Version {APP_VERSION}")
-        self.language_label.setText(self.tr("language"))
-        self.mode_label.setText(self.tr("mode"))
-        self.port_label.setText(self.tr("com_port"))
-        self.refresh_btn.setText(self.tr("refresh_ports"))
-        self.start_btn.setText(self.tr("start"))
-        self.stop_btn.setText(self.tr("stop"))
-        self.record_start_btn.setText(self.tr("start_recording"))
-        self.record_stop_btn.setText(self.tr("stop_recording"))
-        self.player_load_btn.setText(self.tr("load_player_file"))
-        self.export_snapshot_btn.setText(self.tr("export_csv"))
-        self.export_excel_btn.setText(self.tr("export_excel"))
-        self.export_pdf_btn.setText(self.tr("export_pdf"))
-        self.export_trend_btn.setText(self.tr("export_trend_png"))
-        if not self.serial_port and not self.sim_timer.isActive() and not self.player_timer.isActive():
-            self.status.setText(self.tr("status_ready"))
-        if not self.recording:
-            self.rec_label.setText(self.tr("rec_off"))
-            self.rec_file_label.setText(self.tr("file_none"))
-        self.rec_count_label.setText(self.tr("telegrams_count", count=self.record_packet_count))
-        self.update_license_label()
-        self.tabs.setTabText(0, self.tr("tabs_dashboard"))
-        self.tabs.setTabText(1, self.tr("tabs_trend"))
-        self.tabs.setTabText(2, self.tr("tabs_telegrams"))
-        self.tabs.setTabText(3, self.tr("tabs_decoder"))
-        self.tabs.setTabText(4, self.tr("tabs_telegram_explorer"))
-        self.tabs.setTabText(5, self.tr("tabs_mcs4_analyzer"))
-        self.tabs.setTabText(6, self.tr("tabs_protocol_statistics"))
-        self.tabs.setTabText(7, self.tr("tabs_decoder_compliance"))
-        self.tabs.setTabText(8, self.tr("tabs_appendix12"))
-        self.tabs.setTabText(9, self.tr("tabs_sensor_configuration"))
-        self.tabs.setTabText(10, self.tr("tabs_alarms"))
-        self.tabs.setTabText(11, self.tr("tabs_export"))
-        self.tabs.setTabText(12, self.tr("tabs_diagnostics"))
-        self.table.setHorizontalHeaderLabels(self.translations.get("dashboard_headers", []))
-        self.explorer_table.setHorizontalHeaderLabels(self.translations.get("explorer_headers", []))
-        self.analyzer_table.setHorizontalHeaderLabels(self.translations.get("analyzer_headers", []))
-        self.config_table.setHorizontalHeaderLabels(self.translations.get("config_headers", []))
-        self.compliance_table.setHorizontalHeaderLabels(self.translations.get("compliance_headers", []))
-        if hasattr(self, "appendix12_table"):
-            self.appendix12_table.setHorizontalHeaderLabels(self.translations.get("appendix12_headers", []))
-            self.populate_appendix12_table()
-        self.populate_compliance_table()
-        self.analyzer_hint.setText(self.tr("mcs4_analyzer_hint"))
-        self.learn_save_btn.setText(self.tr("learning_mode_save_name"))
-        self.learn_key_label.setText(self.tr("detected_key"))
-        self.learn_name_label.setText(self.tr("name"))
-        self.learn_name_edit.setPlaceholderText(self.tr("placeholder_sensor_name"))
-        self.config_save_btn.setText(self.tr("save_sensor_configuration"))
-        self.config_reload_btn.setText(self.tr("reload_configuration"))
-        self.config_cleanup_btn.setText(self.tr("clean_unused_sensors"))
-        self.trend_plot.setLabel("left", self.tr("value_axis")) if "value_axis" in self.translations else self.trend_plot.setLabel("left", "Value")
-
-    def update_license_label(self) -> None:
-        if self.license_status and self.license_status.valid:
-            self.license_label.setText(self.tr("license_line", customer=self.license_status.customer, type=self.license_status.license_type, days=self.license_status.days_left))
-        else:
-            self.license_label.setText(self.tr("license_not_checked"))
-
     def _build_ui(self):
         root = QWidget()
         main_layout = QVBoxLayout(root)
 
         title_row = QHBoxLayout()
-        self.title_label = QLabel(self.tr("app_title"))
-        title = self.title_label
+        title = QLabel("MCS-4 Professional Monitor")
         title.setStyleSheet("font-size: 22px; font-weight: bold;")
-        self.version_label = QLabel(f"Version {APP_VERSION}")
-        version = self.version_label
+        version = QLabel(f"Version {APP_VERSION}")
         version.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.license_label = QLabel("")
+        license_text = "License: not checked"
+        if self.license_status and self.license_status.valid:
+            license_text = (
+                f"License: {self.license_status.customer} | "
+                f"{self.license_status.license_type} | "
+                f"{self.license_status.days_left} days left"
+            )
+        self.license_label = QLabel(license_text)
         self.license_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.license_label.setStyleSheet("color: #555;")
         title_row.addWidget(title)
@@ -593,39 +377,32 @@ class MainWindow(QMainWindow):
         header.setStyleSheet("QFrame { background: #f4f6f8; border-radius: 6px; }")
         header_layout = QGridLayout(header)
 
-        self.language_label = QLabel(self.tr("language"))
-        self.language_box = QComboBox()
-        self.language_box.addItem("English", "en")
-        self.language_box.addItem("Deutsch", "de")
-        self.language_box.addItem("العربية", "ar")
-        self.mode_label = QLabel(self.tr("mode"))
         self.mode = QComboBox()
         self.mode.addItems(["Simulator", "RS422", "Player"])
-        self.port_label = QLabel(self.tr("com_port"))
         self.port_box = QComboBox()
-        self.refresh_btn = QPushButton(self.tr("refresh_ports"))
-        self.start_btn = QPushButton(self.tr("start"))
-        self.stop_btn = QPushButton(self.tr("stop"))
-        self.record_start_btn = QPushButton(self.tr("start_recording"))
-        self.record_stop_btn = QPushButton(self.tr("stop_recording"))
-        self.player_load_btn = QPushButton(self.tr("load_player_file"))
-        self.export_snapshot_btn = QPushButton(self.tr("export_csv"))
-        self.export_excel_btn = QPushButton(self.tr("export_excel"))
-        self.export_pdf_btn = QPushButton(self.tr("export_pdf"))
-        self.export_trend_btn = QPushButton(self.tr("export_trend_png"))
+        self.refresh_btn = QPushButton("Ports aktualisieren")
+        self.start_btn = QPushButton("Start")
+        self.stop_btn = QPushButton("Stop")
+        self.record_start_btn = QPushButton("Start Recording")
+        self.record_stop_btn = QPushButton("Stop Recording")
+        self.player_load_btn = QPushButton("Player-Datei laden")
+        self.export_snapshot_btn = QPushButton("Export CSV")
+        self.export_excel_btn = QPushButton("Export Excel")
+        self.export_pdf_btn = QPushButton("Export PDF Report")
+        self.export_trend_btn = QPushButton("Export Trend PNG")
 
-        self.status = QLabel(self.tr("status_ready"))
+        self.status = QLabel("Status: ready")
         self.status.setStyleSheet("font-weight: bold;")
 
-        self.rec_label = QLabel(self.tr("rec_off"))
+        self.rec_label = QLabel("⚫ REC OFF")
         self.rec_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #333;")
         self.rec_time_label = QLabel("00:00:00")
-        self.rec_count_label = QLabel(self.tr("telegrams_count", count=0))
-        self.rec_file_label = QLabel(self.tr("file_none"))
+        self.rec_count_label = QLabel("Telegrams: 0")
+        self.rec_file_label = QLabel("Datei: -")
 
-        header_layout.addWidget(self.mode_label, 0, 0)
+        header_layout.addWidget(QLabel("Modus:"), 0, 0)
         header_layout.addWidget(self.mode, 0, 1)
-        header_layout.addWidget(self.port_label, 0, 2)
+        header_layout.addWidget(QLabel("COM-Port:"), 0, 2)
         header_layout.addWidget(self.port_box, 0, 3)
         header_layout.addWidget(self.refresh_btn, 0, 4)
         header_layout.addWidget(self.player_load_btn, 0, 5)
@@ -644,8 +421,6 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self.rec_time_label, 0, 7)
         header_layout.addWidget(self.rec_count_label, 1, 6)
         header_layout.addWidget(self.rec_file_label, 1, 7)
-        header_layout.addWidget(self.language_label, 2, 6)
-        header_layout.addWidget(self.language_box, 2, 7)
         header_layout.setColumnStretch(5, 1)
 
         main_layout.addWidget(header)
@@ -653,9 +428,11 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
 
         self.table = QTableWidget(0, 11)
-        self.table.setHorizontalHeaderLabels(self.translations.get("dashboard_headers", []))
+        self.table.setHorizontalHeaderLabels(
+            ["Key", "MP", "Page", "Line", "Sensor", "Value", "Unit", "Status", "Alarm", "Min/Max", "Time"]
+        )
         self.table.horizontalHeader().setStretchLastSection(True)
-        self.tabs.addTab(self.table, self.tr("tabs_dashboard"))
+        self.tabs.addTab(self.table, "Dashboard")
 
         self.trend_plot = pg.PlotWidget()
         self.trend_plot.setBackground("w")
@@ -663,99 +440,86 @@ class MainWindow(QMainWindow):
         self.trend_plot.addLegend()
         self.trend_plot.setLabel("left", "Value")
         self.trend_plot.setLabel("bottom", "Zeitpunkte")
-        self.tabs.addTab(self.trend_plot, self.tr("tabs_trend"))
+        self.tabs.addTab(self.trend_plot, "Trend")
 
         self.telegram_log = QPlainTextEdit()
         self.telegram_log.setReadOnly(True)
-        self.tabs.addTab(self.telegram_log, self.tr("tabs_telegrams"))
+        self.tabs.addTab(self.telegram_log, "Telegrams")
 
         self.decoder_log = QPlainTextEdit()
         self.decoder_log.setReadOnly(True)
-        self.tabs.addTab(self.decoder_log, self.tr("tabs_decoder"))
+        self.tabs.addTab(self.decoder_log, "Decoder")
 
         self.explorer_table = QTableWidget(0, 3)
-        self.explorer_table.setHorizontalHeaderLabels(self.translations.get("explorer_headers", []))
+        self.explorer_table.setHorizontalHeaderLabels(["Feld", "Value", "Bedeutung"])
         self.explorer_table.horizontalHeader().setStretchLastSection(True)
-        self.tabs.addTab(self.explorer_table, self.tr("tabs_telegram_explorer"))
+        self.tabs.addTab(self.explorer_table, "Telegram Explorer")
 
         analyzer_widget = QWidget()
         analyzer_layout = QVBoxLayout(analyzer_widget)
-        self.analyzer_hint = QLabel(self.tr("mcs4_analyzer_hint"))
-        analyzer_hint = self.analyzer_hint
+        analyzer_hint = QLabel(
+            "MCS-4 Analyzer: zeigt alle erkannten Measuring Pointe als Kombination aus Measuring Point + Page + Line. "
+            "Im Lernmodus kann ein erkannter Value dauerhaft benannt werden."
+        )
         analyzer_layout.addWidget(analyzer_hint)
 
         learn_row = QHBoxLayout()
         self.learn_key_box = QComboBox()
         self.learn_name_edit = QLineEdit()
-        self.learn_name_edit.setPlaceholderText(self.tr("placeholder_sensor_name"))
-        self.learn_save_btn = QPushButton(self.tr("learning_mode_save_name"))
-        self.learn_key_label = QLabel(self.tr("detected_key"))
-        self.learn_name_label = QLabel(self.tr("name"))
-        learn_row.addWidget(self.learn_key_label)
+        self.learn_name_edit.setPlaceholderText("Sensor name, e.g. engine speed")
+        self.learn_save_btn = QPushButton("Lernmodus: Name speichern")
+        learn_row.addWidget(QLabel("Erkannter Key:"))
         learn_row.addWidget(self.learn_key_box)
-        learn_row.addWidget(self.learn_name_label)
+        learn_row.addWidget(QLabel("Name:"))
         learn_row.addWidget(self.learn_name_edit)
         learn_row.addWidget(self.learn_save_btn)
         analyzer_layout.addLayout(learn_row)
 
         self.analyzer_table = QTableWidget(0, 13)
-        self.analyzer_table.setHorizontalHeaderLabels(self.translations.get("analyzer_headers", []))
+        self.analyzer_table.setHorizontalHeaderLabels([
+            "Key", "MP", "Page", "Line", "Name", "Unit", "Value", "Rohwert",
+            "Min", "Max", "Count", "Last Telegram", "Status"
+        ])
         self.analyzer_table.horizontalHeader().setStretchLastSection(True)
         analyzer_layout.addWidget(self.analyzer_table)
-        self.tabs.addTab(analyzer_widget, self.tr("tabs_mcs4_analyzer"))
+        self.tabs.addTab(analyzer_widget, "MCS-4 Analyzer")
 
         self.protocol_stats_log = QPlainTextEdit()
         self.protocol_stats_log.setReadOnly(True)
-        self.tabs.addTab(self.protocol_stats_log, self.tr("tabs_protocol_statistics"))
-
-        self.compliance_table = QTableWidget(0, 6)
-        self.compliance_table.setHorizontalHeaderLabels(self.translations.get("compliance_headers", []))
-        self.compliance_table.horizontalHeader().setStretchLastSection(True)
-        self.tabs.addTab(self.compliance_table, self.tr("tabs_decoder_compliance"))
-
-        appendix_widget = QWidget()
-        appendix_layout = QVBoxLayout(appendix_widget)
-        self.appendix12_summary = QLabel("")
-        appendix_layout.addWidget(self.appendix12_summary)
-        self.appendix12_table = QTableWidget(0, 8)
-        self.appendix12_table.setHorizontalHeaderLabels(self.translations.get("appendix12_headers", []))
-        self.appendix12_table.horizontalHeader().setStretchLastSection(True)
-        appendix_layout.addWidget(self.appendix12_table)
-        self.tabs.addTab(appendix_widget, self.tr("tabs_appendix12"))
+        self.tabs.addTab(self.protocol_stats_log, "Protocol-Statistik")
 
         config_widget = QWidget()
         config_layout = QVBoxLayout(config_widget)
         config_buttons = QHBoxLayout()
-        self.config_save_btn = QPushButton(self.tr("save_sensor_configuration"))
-        self.config_reload_btn = QPushButton(self.tr("reload_configuration"))
-        self.config_cleanup_btn = QPushButton(self.tr("clean_unused_sensors"))
+        self.config_save_btn = QPushButton("Save Sensor Configuration")
+        self.config_reload_btn = QPushButton("Reload Configuration")
+        self.config_cleanup_btn = QPushButton("Clean Unused Sensors")
         config_buttons.addWidget(self.config_save_btn)
         config_buttons.addWidget(self.config_reload_btn)
         config_buttons.addWidget(self.config_cleanup_btn)
         config_buttons.addStretch()
         config_layout.addLayout(config_buttons)
         self.config_table = QTableWidget(0, 12)
-        self.config_table.setHorizontalHeaderLabels(self.translations.get("config_headers", []))
+        self.config_table.setHorizontalHeaderLabels(["Key", "Measuring Point", "Name", "Page", "Line", "Unit", "Warn Low", "Warn High", "Alarm Low", "Alarm High", "Active", "Status"])
         self.config_table.horizontalHeader().setStretchLastSection(True)
         config_layout.addWidget(self.config_table)
-        self.tabs.addTab(config_widget, self.tr("tabs_sensor_configuration"))
+        self.tabs.addTab(config_widget, "Sensor Configuration")
 
         self.alarm_log = QPlainTextEdit()
         self.alarm_log.setReadOnly(True)
-        self.tabs.addTab(self.alarm_log, self.tr("tabs_alarms"))
+        self.tabs.addTab(self.alarm_log, "Alarms")
 
         self.export_log = QPlainTextEdit()
         self.export_log.setReadOnly(True)
-        self.tabs.addTab(self.export_log, self.tr("tabs_export"))
+        self.tabs.addTab(self.export_log, "Export")
 
         self.diagnostics = QPlainTextEdit()
         self.diagnostics.setReadOnly(True)
-        self.tabs.addTab(self.diagnostics, self.tr("tabs_diagnostics"))
+        self.tabs.addTab(self.diagnostics, "Diagnostics")
 
         main_layout.addWidget(self.tabs)
         self.setCentralWidget(root)
 
-        self.language_box.currentIndexChanged.connect(self.change_language)
         self.refresh_btn.clicked.connect(self.refresh_ports)
         self.start_btn.clicked.connect(self.start)
         self.stop_btn.clicked.connect(self.stop)
@@ -836,7 +600,7 @@ class MainWindow(QMainWindow):
 
             active = entry_key in active_keys
             active_item = QTableWidgetItem("Yes" if active else "No")
-            status_item = QTableWidgetItem(self.tr("active_seen") if active else self.tr("inactive_seen"))
+            status_item = QTableWidgetItem("in aktueller Sitzung erkannt" if active else "nicht in aktueller Sitzung erkannt")
             if active:
                 active_item.setBackground(Qt.green)
                 status_item.setBackground(Qt.green)
@@ -880,7 +644,7 @@ class MainWindow(QMainWindow):
         self.sensor_values.clear()
         self.active_alarms.clear()
         self.table.setRowCount(0)
-        self.alarm_log.appendPlainText(f"{datetime.now():%H:%M:%S} [INFO] {self.tr("config_saved")}")
+        self.alarm_log.appendPlainText(f"{datetime.now():%H:%M:%S} [INFO] Sensor Configuration gespeichert")
         self.log("Sensor Configuration gespeichert")
 
     def reload_sensor_config(self):
@@ -938,7 +702,7 @@ class MainWindow(QMainWindow):
         self.load_sensor_config_from_file()
         self.populate_config_table()
         self.log(f"Cleanup completed: {len(removed)} sensor(s) removed")
-        self.alarm_log.appendPlainText(f"{datetime.now():%H:%M:%S} [INFO] {self.tr("config_cleaned", count=len(removed))}")
+        self.alarm_log.appendPlainText(f"{datetime.now():%H:%M:%S} [INFO] Configuration cleaned: {len(removed)} entfernt")
 
     def add_detected_sensor_to_config(self, measuring_point: int, page: int, line: int, unit: str) -> None:
         """Automatically add newly detected measuring points to the configuration table.
@@ -994,16 +758,15 @@ class MainWindow(QMainWindow):
         self.stop(clear_status=False)
         self.telegram_log.clear()
         self.decoder_log.clear()
-        self.set_explorer_placeholder("Waiting for telegram data")
+        self.explorer_table.setRowCount(0)
         self.buffer.clear()
 
         mode = self.mode.currentText()
 
         if mode == "Simulator":
-            self.status.setText(self.tr("status_simulator_running"))
+            self.status.setText("Status: simulator running")
             self.log("Simulator started")
             self.sim_timer.start(250)
-            self.update_simulator()
             return
 
         if mode == "RS422":
@@ -1022,24 +785,24 @@ class MainWindow(QMainWindow):
         if self.serial_port is not None:
             try:
                 self.serial_port.close()
-                self.log(self.tr("log_rs422_closed"))
+                self.log("RS422 geschlossen")
             except Exception as exc:
                 self.log(f"Error while closing: {exc}")
             self.serial_port = None
 
         if clear_status:
-            self.status.setText(self.tr("status_stopped"))
+            self.status.setText("Status: stopped")
 
     def start_rs422(self):
         if serial is None:
-            self.status.setText(self.tr("status_pyserial_missing"))
-            self.log(self.tr("log_pyserial_missing"))
+            self.status.setText("Status: pyserial missing")
+            self.log("pyserial ist nicht verfügbar")
             return
 
         port = self.port_box.currentData()
 
         if not port:
-            self.status.setText(self.tr("status_no_com_port"))
+            self.status.setText("Status: no COM port")
             self.log("No COM port selected")
             return
 
@@ -1053,14 +816,13 @@ class MainWindow(QMainWindow):
                 timeout=0,
             )
 
-            self.status.setText(self.tr("status_rs422_connected", port=port))
+            self.status.setText(f"Status: RS422 connected {port}")
             self.log(f"RS422 opened: {port}, 38400 Baud, 8O1")
-            self.set_explorer_placeholder("RS422 connected - waiting for telegrams")
             self.serial_timer.start(50)
 
         except Exception as exc:
-            self.status.setText(self.tr("status_rs422_error"))
-            self.log(self.tr("log_rs422_error", error=exc))
+            self.status.setText("Status: RS422 error")
+            self.log(f"RS422 Fehler: {exc}")
 
     def read_serial(self):
         if self.serial_port is None:
@@ -1088,13 +850,16 @@ class MainWindow(QMainWindow):
     def update_simulator(self):
         self.t += 0.25
 
-        # Normal simulator values for customer demonstrations.
-        # Short warning/alarm excursions can be added later via a dedicated demo mode.
-        oil_temp = 82 + 2 * math.sin(self.t)
-        oil_pressure = 5.2 + 0.15 * math.sin(self.t / 2)
-        rpm = 780 + 80 * math.sin(self.t / 3)
-        coolant = 79 + 2.0 * math.cos(self.t)
-        exhaust = 460 + random.randint(-5, 5)
+        oil_temp = 82 + 3 * math.sin(self.t)
+        oil_pressure = 5.2 + 0.2 * math.sin(self.t / 2)
+        rpm = 1480 + 60 * math.sin(self.t / 3)
+        coolant = 79 + 2.5 * math.cos(self.t)
+        exhaust = 460 + random.randint(-8, 8)
+
+        if int(self.t) % 30 > 24:
+            oil_temp += 14
+        if int(self.t) % 40 > 34:
+            exhaust += 120
 
         packets = bytearray()
         # Simulator now uses the real MCS-4 byte-6 Page/Line principle.
@@ -1157,20 +922,17 @@ class MainWindow(QMainWindow):
         number = packet[4]
         now = datetime.now().strftime("%H:%M:%S")
 
-        decoded_frame = protocol_decode_frame(packet)
-        validation_errors = sorted(set(self.validate_packet(packet, word_type) + decoded_frame.errors))
+        validation_errors = self.validate_packet(packet, word_type)
         self.register_protocol_packet(packet, word_type, number, None, None, None, validation_errors)
 
         if word_type != 0:
             self.packet_count += 1
-            summary = decode_non_data_summary(packet)
-            flag_text = "; ".join(summary.get("flag_details", []))
             self.decoder_log.appendPlainText(
                 f"{now}  WT={word_type} {word_type_text}  FLAGS=0x{decode_word_flags(header):X}  LEN={len(packet)}  "
                 f"NO={number} SRC={source} DST={destination}  "
-                f"{'INVALID: ' + '; '.join(validation_errors) if validation_errors else 'OK'}  {flag_text}"
+                f"{'INVALID: ' + '; '.join(validation_errors) if validation_errors else 'OK'}"
             )
-            self.update_explorer_wordtype(packet, validation_errors, summary)
+            self.update_explorer_generic(packet, validation_errors)
             self.record_packet(packet)
             return
 
@@ -1238,7 +1000,6 @@ class MainWindow(QMainWindow):
             "min": min_value,
             "max": max_value,
             "time": now,
-            "last_update_dt": datetime.now(),
             "sensor_fault": sensor_fault,
             "page": page,
             "line": line,
@@ -1291,37 +1052,6 @@ class MainWindow(QMainWindow):
                 errors.append("Byte 8 D7 gesetzt, laut Format nicht erwartet")
         return errors
 
-    def update_explorer_wordtype(self, packet: bytes, validation_errors: list[str], summary: dict):
-        header = packet[1] if len(packet) > 1 else 0
-        word_type = decode_word_type(header)
-        flags = decode_word_flags(header)
-        rows = [
-            ("Telegram", hex_string(packet), "Received Telegram"),
-            ("Length", str(len(packet)), f"Expected: {WORD_LENGTHS.get(word_type, '?')} Byte"),
-            ("WordType", f"{word_type}", summary.get("word_type_name", "")),
-            ("Byte 2 / Header", f"0x{header:02X}", "D7..D4 flags, D3..D0 WordType"),
-            ("Byte 2 Bits", byte_bits(header), "D7 D6 D5 D4 | D3 D2 D1 D0"),
-            ("Header Flags", f"0x{flags:X}", "; ".join(summary.get("flag_details", []))),
-            ("Byte 3 / Destination", str(packet[2]) if len(packet) > 2 else "-", "Target address"),
-            ("Byte 4 / Source", str(packet[3]) if len(packet) > 3 else "-", "Sender address"),
-            ("Byte 5 / Number", str(packet[4]) if len(packet) > 4 else "-", "Measuring Point / alarm number / command code depending on WordType"),
-        ]
-        if len(packet) == 8:
-            rows.extend([
-                ("Byte 6", f"0x{packet[5]:02X}", "Word-specific field; for many analog formats Page/Line candidate"),
-                ("Byte 6 Bits", byte_bits(packet[5]), "D7..D3 Page candidate | D2..D0 Line candidate"),
-                ("Page candidate", str(summary.get("page", "-")), "Decoded from Byte 6 D7..D3 where applicable"),
-                ("Line candidate", str(summary.get("line", "-")), "Decoded from Byte 6 D2..D0 where applicable"),
-                ("Byte 7", f"0x{packet[6]:02X}", "Word-specific data/check/status byte"),
-                ("Byte 7 Bits", byte_bits(packet[6]), "D7 reserved/0; remaining bits are word-specific"),
-                ("Byte 8", f"0x{packet[7]:02X}", "Word-specific data/check/status byte"),
-                ("Byte 8 Bits", byte_bits(packet[7]), "D7 reserved/0; remaining bits are word-specific"),
-                ("Raw candidate", str(summary.get("raw_value_like", "-")), "12-bit candidate only; not used as dashboard value for non-Data words"),
-            ])
-        rows.append(("Dashboard", "Not updated", "Only WordType 0 Data Value is accepted as live sensor value"))
-        rows.append(("Validation", "OK" if not validation_errors else "ERROR", "; ".join(validation_errors) if validation_errors else "Telegram formal plausible"))
-        self._fill_explorer(rows)
-
     def update_explorer_generic(self, packet: bytes, validation_errors: list[str]):
         header = packet[1] if len(packet) > 1 else 0
         word_type = decode_word_type(header)
@@ -1330,7 +1060,6 @@ class MainWindow(QMainWindow):
             ("Length", str(len(packet)), f"Expected: {WORD_LENGTHS.get(word_type, '?')} Byte"),
             ("Byte 1 / Sync", f"0x{packet[0]:02X}" if packet else "-", "Synchronisationsbyte"),
             ("Byte 2 / Header", f"0x{header:02X}", f"Word Type {word_type}: {self.word_types.get(word_type, 'unbekannt')}"),
-            ("Byte 2 Bits", byte_bits(header), "D7..D4 flags | D3..D0 WordType"),
             ("Byte 2 Flags", f"0x{decode_word_flags(header):X}", "Bits D7..D4, wort-spezifische Erweiterungen"),
             ("Byte 3 / Destination", str(packet[2]) if len(packet) > 2 else "-", "Zieladresse"),
             ("Byte 4 / Source", str(packet[3]) if len(packet) > 3 else "-", "Senderadresse"),
@@ -1360,44 +1089,25 @@ class MainWindow(QMainWindow):
     ):
         word_type = decode_word_type(header)
         rows = [
-            ("Telegram #", str(self.packet_count + 1), "Sequential processed telegram counter"),
-            ("Timestamp", datetime.now().strftime("%H:%M:%S.%f")[:-3], "Local processing time"),
-            ("Telegram", hex_string(packet), "Complete telegram"),
+            ("Telegram", hex_string(packet), "Vollständiges Telegram"),
             ("Length", str(len(packet)), "Data Value must have 8 bytes"),
-            ("WordType", f"{word_type}", self.word_types.get(word_type, "unknown")),
-            ("Target / Source", f"{destination} / {source}", "Target address / sender address"),
             ("Byte 1 / Sync", f"0x{packet[0]:02X}", "Synchronisationsbyte"),
             ("Byte 2 / Header", f"0x{header:02X}", f"Word Type {word_type}: {self.word_types.get(word_type, 'unbekannt')}"),
-            ("Byte 2 Bits", byte_bits(header), "D7..D4 flags | D3..D0 WordType"),
             ("Byte 2 Flags", f"0x{decode_word_flags(header):X}", "Bits D7..D4, wort-spezifische Erweiterungen"),
             ("Byte 3 / Destination", str(destination), "Zieladresse 0..127"),
             ("Byte 4 / Source", str(source), "Senderadresse 0..63"),
             ("Byte 5 / Measuring Point", str(measuring_point), name),
             ("Byte 6", f"0x{packet[5]:02X}", "PAGE + LINE, nicht direkte Unit"),
-            ("Byte 6 Bits", byte_bits(packet[5]), "D7..D3 Page | D2..D0 Line"),
             ("Page", str(page), "Appendix 12 page for unit/range"),
             ("Line", str(line), "Appendix-12-Zeile"),
             ("Byte 7", f"0x{packet[6]:02X}", "D6 Sensor fault, D5 Vorzeichen, D4..D0 Value"),
-            ("Byte 7 Bits", byte_bits(packet[6]), "D7 reserved/0 | D6 fault | D5 sign | D4..D0 value"),
-            ("Byte 7 Bit layout", "D7 D6 D5 D4 D3 D2 D1 D0", "0 | Sensor fault | Sign | 5 high data bits"),
             ("Byte 8", f"0x{packet[7]:02X}", "D6..D0 Value"),
-            ("Byte 8 Bits", byte_bits(packet[7]), "D7 reserved/0 | D6..D0 value"),
-            ("Byte 8 Bit layout", "D7 D6 D5 D4 D3 D2 D1 D0", "0 | 7 low data bits"),
-            ("Raw value 12 bit", str(raw_value), "Decimal raw value"),
-            ("Raw value hex", f"0x{raw_value:03X}", "12-bit raw value in hexadecimal"),
-            ("Raw formula", "((Byte7 & 0x1F) << 7) | (Byte8 & 0x7F)", "PDF Appendix 2 data value formula"),
+            ("Rohwert 12 Bit", str(raw_value), "((Byte7 & 0x1F) << 7) | (Byte8 & 0x7F)"),
             ("Vorzeichen", "negativ" if negative else "positiv", "Byte 7 D5"),
             ("Sensor fault", "YES" if sensor_fault else "No", "Byte 7 D6"),
             ("Skalierung", scaling_text, "Appendix 12"),
             ("Skalierter Value", f"{value:.3f} {unit}", name),
             ("Status", state, alarm_text if alarm_text else "OK"),
-        ]
-        self._fill_explorer(rows)
-
-    def set_explorer_placeholder(self, message: str):
-        rows = [
-            ("Status", message, "The Telegram Explorer updates automatically when the first complete MCS-4 frame is received."),
-            ("Expected input", "Simulator / RS422 / Player", "Start a source or load a recording to inspect the latest telegram."),
         ]
         self._fill_explorer(rows)
 
@@ -1407,101 +1117,6 @@ class MainWindow(QMainWindow):
             self.explorer_table.setItem(row, 0, QTableWidgetItem(field))
             self.explorer_table.setItem(row, 1, QTableWidgetItem(value_text))
             self.explorer_table.setItem(row, 2, QTableWidgetItem(meaning))
-
-    def _compliance_rows(self):
-        verified = self.tr("compliance_status_verified")
-        simulated = self.tr("compliance_status_simulated")
-        implemented = self.tr("compliance_status_implemented")
-        partial = self.tr("compliance_status_partial")
-        todo = self.tr("compliance_status_todo")
-        ok = self.tr("compliance_next_ok")
-        live_sim = self.tr("compliance_live_simulator")
-        live_pending = self.tr("compliance_live_pending")
-        code_only = self.tr("compliance_code_only")
-        rows = [
-            ("RS422 serial format", "38400 Baud, 8 data bits, odd parity, 1 stop bit", "Configured in RS422 start routine", "Exsys open/close tested; real MCS live verification still customer-side", implemented, ok),
-            ("Byte 1 Sync", "Byte 1 must be FF", "Frame reader synchronizes on 0xFF", live_sim, simulated, ok),
-            ("Byte 2 WordType", "D3..D0 = WordType", "decode_word_type(header & 0x0F)", live_sim, simulated, ok),
-            ("Byte 2 Flags", "D7..D4 = word-specific extension bits", "decode_word_flags(header >> 4); bit view shown in explorer", code_only, implemented, self.tr("compliance_next_live_validate")),
-            ("WordType lengths", "WT 0/1/6/7 = 8 bytes, WT 2/3/4/5 = 5 bytes", "WORD_LENGTHS table used by frame reader", code_only, implemented, self.tr("compliance_next_live_validate")),
-            ("Undefined WordTypes", "WT 8..14 are not defined/reserved", "Rejected/resynchronized, not converted to sensor values", code_only, implemented, self.tr("compliance_next_live_validate")),
-            ("Decoder architecture", "Dedicated dispatcher and WordType decoders", "protocol/dispatcher.py and protocol/decoders/* added; main path now validates through dispatcher", code_only, implemented, self.tr("compliance_next_wordtype_decoder")),
-            ("Data Value only to dashboard", "Only WT 0 carries live analog data values", "Only WT 0 updates dashboard/trend", live_sim, simulated, ok),
-            ("Byte 3 Target", "Target device/group address 0..127", "Validated and shown in explorer", live_sim, simulated, ok),
-            ("Byte 4 Source", "Sender device address 0..63", "Validated and shown in explorer", live_sim, simulated, ok),
-            ("Byte 5 Measuring Point", "Measuring point number; not a fixed sensor name", "Used with Page/Line as composite key", live_sim, simulated, ok),
-            ("Byte 6 Page/Line", "D7..D3 = Page, D2..D0 = Line", "decode_page_line(byte6); bit view shown in explorer", live_sim, simulated, ok),
-            ("Data Value Byte 7/8", "D6 sensor fault, D5 sign, D4..D0 + Byte8 D6..D0 = 12-bit value", "decode_12bit_value(byte7, byte8); bit view shown in explorer", live_sim, simulated, ok),
-            ("Sensor fault", "Byte7 D6 marks sensor fault", "Evaluated and passed to alarm/status logic", code_only, implemented, self.tr("compliance_next_live_validate")),
-            ("Sign bit", "Byte7 D5 marks negative value", "Applied before scaling", code_only, implemented, self.tr("compliance_next_live_validate")),
-            ("Appendix 12 scaling", "Page/Line selects unit, range and factor", "SCALING_TABLE present but still needs final full audit against all appendix rows", code_only, partial, self.tr("compliance_next_appendix12")),
-            ("WordType 1 Limit Value", "Separate WT 1 structure, static/dynamic and header/value flags", "Classified, length-validated and detail fields shown; semantic limit application still pending", live_pending, partial, self.tr("compliance_next_wordtype_decoder")),
-            ("WordType 2 Alarm", "5-byte alarm message with alarm-specific flags", "Classified, length-validated and flag bits displayed; alarm semantics pending", live_pending, partial, self.tr("compliance_next_wordtype_decoder")),
-            ("WordType 3 Control Command", "5-byte control command", "Classified, length-validated and excluded from dashboard values", live_pending, partial, self.tr("compliance_next_wordtype_decoder")),
-            ("WordType 4 Binary Signal", "5-byte binary state message", "Classified, length-validated and flag bits displayed; binary semantics pending", live_pending, partial, self.tr("compliance_next_wordtype_decoder")),
-            ("WordType 5 Key ID", "5-byte key identification", "Classified, length-validated and displayed in explorer", live_pending, partial, self.tr("compliance_next_wordtype_decoder")),
-            ("WordType 6 Status Message", "8-byte status message", "Classified, length-validated and detail fields shown; status semantics pending", live_pending, partial, self.tr("compliance_next_wordtype_decoder")),
-            ("WordType 7 Curve Transfer", "8-byte curve transfer", "Classified, length-validated and detail fields shown; curve semantics pending", live_pending, partial, self.tr("compliance_next_wordtype_decoder")),
-            ("Checksum / CRC", "Only where specified by individual word headers", "Displayed where present; no universal CRC applied", live_pending, partial, self.tr("compliance_next_crc")),
-            ("Regression tests", "Decoder should be checked against simulator and real mcslog files", "run_regression_tests.bat and tests/regression_phase_a.py added", "Simulator/protocol tests available; real mcslog files can be passed as arguments", simulated, self.tr("compliance_next_live_validate")),
-        ]
-        return rows
-
-
-    def populate_appendix12_table(self):
-        """Fill the Appendix 12 tab from the loaded Page/Line scaling database.
-
-        The table is static reference data and must be visible immediately after
-        application start, independent of Simulator/RS422/Player input.
-        """
-        if not hasattr(self, "appendix12_table"):
-            return
-
-        rows = []
-        for (page, line), info in sorted(SCALING_TABLE.items(), key=lambda item: (item[0][0], item[0][1])):
-            unit = str(info.get("unit", ""))
-            measuring_range = info.get("range", "")
-            factor = info.get("factor", "")
-            offset = info.get("offset", 0)
-            formula = info.get("formula") or "value = raw * range / factor"
-            comment = info.get("comment", "")
-            rows.append((page, line, unit, measuring_range, factor, offset, formula, comment))
-
-        self.appendix12_table.setRowCount(len(rows))
-
-        for row, values in enumerate(rows):
-            for col, value in enumerate(values):
-                self.appendix12_table.setItem(row, col, QTableWidgetItem(str(value)))
-
-        if hasattr(self, "appendix12_summary"):
-            self.appendix12_summary.setText(
-                f"Appendix 12 entries loaded: {len(rows)} | Source: database/appendix12.json / internal fallback"
-            )
-
-    def populate_compliance_table(self):
-        if not hasattr(self, "compliance_table"):
-            return
-        rows = self._compliance_rows()
-        self.compliance_table.setRowCount(len(rows))
-        for row, values in enumerate(rows):
-            for col, text in enumerate(values):
-                item = QTableWidgetItem(str(text))
-                if col == 4:
-                    if text == self.tr("compliance_status_verified"):
-                        item.setBackground(Qt.green)
-                    elif text == self.tr("compliance_status_simulated"):
-                        item.setBackground(Qt.darkGreen)
-                        item.setForeground(Qt.white)
-                    elif text == self.tr("compliance_status_implemented"):
-                        item.setBackground(Qt.cyan)
-                    elif text == self.tr("compliance_status_partial"):
-                        item.setBackground(Qt.yellow)
-                    elif text == self.tr("compliance_status_failed"):
-                        item.setBackground(Qt.red)
-                        item.setForeground(Qt.white)
-                    else:
-                        item.setBackground(Qt.lightGray)
-                self.compliance_table.setItem(row, col, item)
 
     def register_analyzer_value(
         self,
@@ -1628,53 +1243,29 @@ class MainWindow(QMainWindow):
             self.analyzer_seen[key]["name"] = name
             self.update_analyzer_table()
         self.log(f"Lernmodus: {key} als '{name}' gespeichert")
-        self.alarm_log.appendPlainText(f"{datetime.now():%H:%M:%S} [INFO] {self.tr("learning_saved", key=key, name=name)}")
+        self.alarm_log.appendPlainText(f"{datetime.now():%H:%M:%S} [INFO] Lernmodus: {key} = {name}")
 
     def evaluate_sensor(self, sensor_id, name: str, value: float, unit: str, sensor_fault: bool = False):
-        """Evaluate alarms strictly from sensor_config.json.
-
-        Appendix 12 defines measuring range and scaling only. It must never be
-        used as warning/alarm limit source. Many automatically detected sensors
-        are created with 0/0 limits; these are treated as "NO LIMITS" and must
-        not generate false alarms.
-        """
         limits = self.limits.get(sensor_id)
 
         alarm_key = sensor_id
         text = ""
 
-        def _num(key: str) -> float:
-            try:
-                return float(limits.get(key, 0.0)) if limits else 0.0
-            except Exception:
-                return 0.0
-
         if sensor_fault:
             state = "SENSORERROR"
-            text = f"{name}: sensor fault bit is set"
+            text = f"{name}: Sensor faultbit gesetzt"
         elif not limits:
-            state = "NO LIMITS"
+            state = "OK"
+        elif value <= limits["alarm_low"] or value >= limits["alarm_high"]:
+            state = "ALARM"
+            text = f"{name}: {value:.2f} {unit} outside alarm limit"
+        elif value <= limits["warn_low"] or value >= limits["warn_high"]:
+            state = "WARNUNG"
+            text = f"{name}: {value:.2f} {unit} outside warning limit"
         else:
-            warn_low = _num("warn_low")
-            warn_high = _num("warn_high")
-            alarm_low = _num("alarm_low")
-            alarm_high = _num("alarm_high")
+            state = "OK"
 
-            has_alarm_limits = alarm_low < alarm_high
-            has_warn_limits = warn_low < warn_high
-
-            if not has_alarm_limits and not has_warn_limits:
-                state = "NO LIMITS"
-            elif has_alarm_limits and (value <= alarm_low or value >= alarm_high):
-                state = "ALARM"
-                text = f"{name}: {value:.2f} {unit} outside alarm limit"
-            elif has_warn_limits and (value <= warn_low or value >= warn_high):
-                state = "WARNING"
-                text = f"{name}: {value:.2f} {unit} outside warning limit"
-            else:
-                state = "OK"
-
-        if state in {"WARNING", "ALARM", "SENSORERROR"}:
+        if state in {"WARNUNG", "ALARM", "SENSORERROR"}:
             old = self.active_alarms.get(alarm_key)
             if old != text:
                 self.active_alarms[alarm_key] = text
@@ -1682,7 +1273,7 @@ class MainWindow(QMainWindow):
         else:
             if alarm_key in self.active_alarms:
                 self.alarm_log.appendPlainText(
-                    f"{datetime.now():%H:%M:%S} [OK] {name}: value back to normal"
+                    f"{datetime.now():%H:%M:%S} [OK] {name}: Value wieder normal"
                 )
                 del self.active_alarms[alarm_key]
 
@@ -1695,13 +1286,6 @@ class MainWindow(QMainWindow):
         self.table.setRowCount(len(sensors))
 
         for row, sensor in enumerate(sensors):
-            last_dt = sensor.get("last_update_dt")
-            age_ms = "-"
-            if last_dt is not None:
-                try:
-                    age_ms = str(int((datetime.now() - last_dt).total_seconds() * 1000))
-                except Exception:
-                    age_ms = "-"
             values = [
                 sensor.get("key", ""),
                 str(sensor["id"]),
@@ -1714,23 +1298,19 @@ class MainWindow(QMainWindow):
                 sensor["alarm"],
                 f"{sensor['min']:.2f} / {sensor['max']:.2f}",
                 sensor["time"],
-                age_ms,
             ]
 
             for col, text in enumerate(values):
                 item = QTableWidgetItem(text)
 
-                if col in (1, 2, 3, 5, 9, 11):
+                if col in (1, 2, 3, 5, 9):
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
 
                 if sensor["state"] in {"ALARM", "SENSORERROR"}:
                     item.setBackground(Qt.red)
                     item.setForeground(Qt.white)
-                elif sensor["state"] in {"WARNING", "WARNUNG"}:
+                elif sensor["state"] == "WARNUNG":
                     item.setBackground(Qt.yellow)
-                    item.setForeground(Qt.black)
-                elif sensor["state"] == "NO LIMITS":
-                    item.setBackground(Qt.lightGray)
                     item.setForeground(Qt.black)
                 else:
                     item.setBackground(Qt.white)
@@ -1834,7 +1414,7 @@ class MainWindow(QMainWindow):
     def export_csv(self):
         rows = self._sensor_rows_for_export()
         if not rows:
-            self.export_log.appendPlainText(f"{datetime.now():%H:%M:%S} {self.tr("no_sensor_data_export")}")
+            self.export_log.appendPlainText(f"{datetime.now():%H:%M:%S} No sensor data available for export")
             return
 
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -1846,7 +1426,7 @@ class MainWindow(QMainWindow):
             writer.writeheader()
             writer.writerows(rows)
 
-        self.export_log.appendPlainText(f"{datetime.now():%H:%M:%S} {self.tr("csv_exported", path=path)}")
+        self.export_log.appendPlainText(f"{datetime.now():%H:%M:%S} CSV exportiert: {path}")
         self.log(f"CSV exportiert: {path}")
 
     def _table_widget_rows(self, table: QTableWidget):
@@ -1909,7 +1489,7 @@ class MainWindow(QMainWindow):
             from openpyxl.styles import Font, PatternFill, Border, Side
             from openpyxl.utils import get_column_letter
         except Exception as exc:
-            self.export_log.appendPlainText(f"{datetime.now():%H:%M:%S} {self.tr("excel_failed", error=exc)}")
+            self.export_log.appendPlainText(f"{datetime.now():%H:%M:%S} Excel export not possible: {exc}")
             self.log(f"Excel export not possible: {exc}")
             return
 
@@ -1981,14 +1561,6 @@ class MainWindow(QMainWindow):
         headers, rows = self._table_widget_rows(self.analyzer_table)
         self._write_sheet(wb, "MCS-4 Analyzer", headers, rows, "Erkannte Measuring Pointe")
 
-        # Decoder Compliance
-        headers, rows = self._table_widget_rows(self.compliance_table)
-        self._write_sheet(wb, "Decoder Compliance", headers, rows, "PDF compliance audit")
-
-        if hasattr(self, "appendix12_table"):
-            headers, rows = self._table_widget_rows(self.appendix12_table)
-            self._write_sheet(wb, "Appendix 12", headers, rows, "Appendix 12 Page/Line scaling database")
-
         # Sensor Configuration
         headers, rows = self._table_widget_rows(self.config_table)
         self._write_sheet(wb, "Sensor Configuration", headers, rows, "Current sensor configuration")
@@ -2022,7 +1594,7 @@ class MainWindow(QMainWindow):
         self._autosize_sheet(ws_trend)
 
         wb.save(path)
-        self.export_log.appendPlainText(f"{datetime.now():%H:%M:%S} {self.tr("excel_exported", path=path)}")
+        self.export_log.appendPlainText(f"{datetime.now():%H:%M:%S} Komplett-Excel exportiert: {path}")
         self.log(f"Komplett-Excel exportiert: {path}")
 
 
@@ -2031,15 +1603,15 @@ class MainWindow(QMainWindow):
         path = EXPORT_DIR / f"trend_{timestamp}.png"
         pixmap = self.trend_plot.grab()
         if pixmap.save(str(path)):
-            self.export_log.appendPlainText(f"{datetime.now():%H:%M:%S} {self.tr("trend_png_exported", path=path)}")
+            self.export_log.appendPlainText(f"{datetime.now():%H:%M:%S} Trend PNG exportiert: {path}")
             self.log(f"Trend PNG exportiert: {path}")
         else:
-            self.export_log.appendPlainText(f"{datetime.now():%H:%M:%S} {self.tr("trend_png_failed")}")
+            self.export_log.appendPlainText(f"{datetime.now():%H:%M:%S} Trend PNG export failed")
 
     def export_pdf_report(self):
         rows = self._sensor_rows_for_export()
         if not rows:
-            self.export_log.appendPlainText(f"{datetime.now():%H:%M:%S} {self.tr("pdf_no_data")}")
+            self.export_log.appendPlainText(f"{datetime.now():%H:%M:%S} No sensor data available for PDF report")
             return
 
         timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
@@ -2113,7 +1685,7 @@ class MainWindow(QMainWindow):
         printer.setOutputFileName(str(path))
         document.print_(printer)
 
-        self.export_log.appendPlainText(f"{datetime.now():%H:%M:%S} {self.tr("pdf_exported", path=path)}")
+        self.export_log.appendPlainText(f"{datetime.now():%H:%M:%S} PDF-Bericht exportiert: {path}")
         self.log(f"PDF-Bericht exportiert: {path}")
 
     def load_player_file(self):
@@ -2141,24 +1713,24 @@ class MainWindow(QMainWindow):
                         pass
 
         self.mode.setCurrentText("Player")
-        self.status.setText(self.tr("status_player_file_loaded", count=len(self.player_packets)))
+        self.status.setText(f"Status: player file loaded ({len(self.player_packets)} Telegrams)")
         self.log(f"Player-Datei geladen: {self.player_file_path}")
 
     def start_player(self):
         if not self.player_packets:
-            self.status.setText(self.tr("status_no_player_file"))
+            self.status.setText("Status: no player file loaded")
             self.log("Keine Player-Datei geladen")
             return
 
         self.player_index = 0
-        self.status.setText(self.tr("status_player_running"))
+        self.status.setText("Status: player running")
         self.log("Player gestartet")
         self.player_timer.start(100)
 
     def player_tick(self):
         if self.player_index >= len(self.player_packets):
             self.player_timer.stop()
-            self.status.setText(self.tr("status_player_finished"))
+            self.status.setText("Status: player finished")
             self.log("Player fertig")
             return
 

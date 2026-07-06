@@ -1,0 +1,20 @@
+{
+  "payload": {
+    "product": "MCS-4 Professional Monitor",
+    "customer": "Local Development",
+    "license_type": "Demo",
+    "version": "2.4",
+    "issued_at": "2026-07-04T16:46:12.488544Z",
+    "expires_at": "2026-08-03T16:46:12.488544Z",
+    "machine_id": "A8AC3231-1BC078CB-6F4EFCB4-85ADEE44",
+    "modules": [
+      "RS422",
+      "Recorder",
+      "Player",
+      "Analyzer",
+      "Export"
+    ],
+    "serial": "D669BE59EA17449A"
+  },
+  "signature": "C7klceh8JiMygxGwT1lYZwPVNb49lnOKido7G4QSK2I"
+}
